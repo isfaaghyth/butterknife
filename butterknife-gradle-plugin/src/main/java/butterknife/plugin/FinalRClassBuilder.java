@@ -27,7 +27,8 @@ import static javax.lang.model.element.Modifier.STATIC;
  * Also enables adding support annotations to indicate the type of resource for every field.
  */
 public final class FinalRClassBuilder {
-  private static final String SUPPORT_ANNOTATION_PACKAGE = "android.support.annotation";
+  private static final String ANNOTATION_PACKAGE = "androidx.annotation";
+  private static final String ANNOTATION_PACKAGE_LEGACY = "android.support.annotation";
   private static final String[] SUPPORTED_TYPES = {
       "anim", "array", "attr", "bool", "color", "dimen", "drawable", "id", "integer", "layout", "menu", "plurals",
       "string", "style", "styleable"
@@ -35,17 +36,17 @@ public final class FinalRClassBuilder {
 
   private FinalRClassBuilder() { }
 
-  public static void brewJava(File rFile, File outputDir, String packageName, String className)
+  public static void brewJava(File rFile, File outputDir, String packageName, String className, boolean useLegacyTypes)
       throws Exception {
     CompilationUnit compilationUnit = JavaParser.parse(rFile);
     TypeDeclaration resourceClass = compilationUnit.getTypes().get(0);
 
-    TypeSpec.Builder result =
-        TypeSpec.classBuilder(className).addModifiers(PUBLIC).addModifiers(FINAL);
+    TypeSpec.Builder result = TypeSpec.classBuilder(className)
+        .addModifiers(PUBLIC, FINAL);
 
     for (Node node : resourceClass.getChildNodes()) {
       if (node instanceof ClassOrInterfaceDeclaration) {
-        addResourceType(Arrays.asList(SUPPORTED_TYPES), result, (ClassOrInterfaceDeclaration) node);
+        addResourceType(Arrays.asList(SUPPORTED_TYPES), result, (ClassOrInterfaceDeclaration) node, useLegacyTypes);
       }
     }
 
@@ -57,13 +58,14 @@ public final class FinalRClassBuilder {
   }
 
   private static void addResourceType(List<String> supportedTypes, TypeSpec.Builder result,
-      ClassOrInterfaceDeclaration node) {
+      ClassOrInterfaceDeclaration node, boolean useLegacyTypes) {
     if (!supportedTypes.contains(node.getNameAsString())) {
       return;
     }
 
     String type = node.getNameAsString();
-    TypeSpec.Builder resourceType = TypeSpec.classBuilder(type).addModifiers(PUBLIC, STATIC, FINAL);
+    TypeSpec.Builder resourceType = TypeSpec.classBuilder(type)
+        .addModifiers(PUBLIC, STATIC, FINAL);
 
     for (BodyDeclaration field : node.getMembers()) {
       if (field instanceof FieldDeclaration) {
@@ -72,7 +74,7 @@ public final class FinalRClassBuilder {
         // used in annotations.
         if (isInt(declaration)) {
           addResourceField(resourceType, declaration.getVariables().get(0),
-                  getSupportAnnotationClass(type));
+                  getSupportAnnotationClass(type, useLegacyTypes));
         }
       }
     }
@@ -89,7 +91,10 @@ public final class FinalRClassBuilder {
   private static void addResourceField(TypeSpec.Builder resourceType, VariableDeclarator variable,
       ClassName annotation) {
     String fieldName = variable.getNameAsString();
-    String fieldValue = variable.getInitializer().map(Node::toString).orElse(null);
+    String fieldValue = variable.getInitializer()
+        .map(Node::toString)
+        .orElseThrow(
+            () -> new IllegalStateException("Field " + fieldName + " missing initializer"));
     FieldSpec.Builder fieldSpecBuilder = FieldSpec.builder(int.class, fieldName)
         .addModifiers(PUBLIC, STATIC, FINAL)
         .initializer(fieldValue);
@@ -101,8 +106,9 @@ public final class FinalRClassBuilder {
     resourceType.addField(fieldSpecBuilder.build());
   }
 
-  private static ClassName getSupportAnnotationClass(String type) {
-    return ClassName.get(SUPPORT_ANNOTATION_PACKAGE, capitalize(type) + "Res");
+  private static ClassName getSupportAnnotationClass(String type, boolean useLegacyTypes) {
+    String supportPackage = useLegacyTypes ? ANNOTATION_PACKAGE_LEGACY : ANNOTATION_PACKAGE;
+    return ClassName.get(supportPackage, capitalize(type) + "Res");
   }
 
   private static String capitalize(String word) {

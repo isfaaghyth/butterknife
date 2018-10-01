@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import javax.annotation.Nullable;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.TypeMirror;
@@ -32,6 +33,7 @@ import static butterknife.compiler.ButterKnifeProcessor.VIEW_TYPE;
 import static butterknife.compiler.ButterKnifeProcessor.isSubtypeOfType;
 import static com.google.auto.common.MoreElements.getPackage;
 import static java.util.Collections.singletonList;
+import static java.util.Objects.requireNonNull;
 import static javax.lang.model.element.Modifier.FINAL;
 import static javax.lang.model.element.Modifier.PRIVATE;
 import static javax.lang.model.element.Modifier.PUBLIC;
@@ -42,21 +44,21 @@ final class BindingSet {
   private static final ClassName VIEW = ClassName.get("android.view", "View");
   private static final ClassName CONTEXT = ClassName.get("android.content", "Context");
   private static final ClassName RESOURCES = ClassName.get("android.content.res", "Resources");
-  private static final ClassName UI_THREAD =
+  private static final ClassName UI_THREAD_LEGACY =
       ClassName.get("android.support.annotation", "UiThread");
-  private static final ClassName UI_THREAD_ANDROIDX =
+  private static final ClassName UI_THREAD =
       ClassName.get("androidx.annotation", "UiThread");
-  private static final ClassName CALL_SUPER =
+  private static final ClassName CALL_SUPER_LEGACY =
       ClassName.get("android.support.annotation", "CallSuper");
-  private static final ClassName CALL_SUPER_ANDROIDX =
+  private static final ClassName CALL_SUPER =
       ClassName.get("androidx.annotation", "CallSuper");
   private static final ClassName SUPPRESS_LINT =
       ClassName.get("android.annotation", "SuppressLint");
   private static final ClassName UNBINDER = ClassName.get("butterknife", "Unbinder");
   static final ClassName BITMAP_FACTORY = ClassName.get("android.graphics", "BitmapFactory");
-  static final ClassName CONTEXT_COMPAT =
+  static final ClassName CONTEXT_COMPAT_LEGACY =
       ClassName.get("android.support.v4.content", "ContextCompat");
-  static final ClassName CONTEXT_COMPAT_ANDROIDX =
+  static final ClassName CONTEXT_COMPAT =
       ClassName.get("androidx.core.content", "ContextCompat");
   static final ClassName ANIMATION_UTILS =
           ClassName.get("android.view.animation", "AnimationUtils");
@@ -70,12 +72,12 @@ final class BindingSet {
   private final ImmutableList<ViewBinding> viewBindings;
   private final ImmutableList<FieldCollectionViewBinding> collectionBindings;
   private final ImmutableList<ResourceBinding> resourceBindings;
-  private final BindingSet parentBinding;
+  private final @Nullable BindingSet parentBinding;
 
   private BindingSet(TypeName targetTypeName, ClassName bindingClassName, boolean isFinal,
       boolean isView, boolean isActivity, boolean isDialog, ImmutableList<ViewBinding> viewBindings,
       ImmutableList<FieldCollectionViewBinding> collectionBindings,
-      ImmutableList<ResourceBinding> resourceBindings, BindingSet parentBinding) {
+      ImmutableList<ResourceBinding> resourceBindings, @Nullable BindingSet parentBinding) {
     this.isFinal = isFinal;
     this.targetTypeName = targetTypeName;
     this.bindingClassName = bindingClassName;
@@ -88,14 +90,14 @@ final class BindingSet {
     this.parentBinding = parentBinding;
   }
 
-  JavaFile brewJava(int sdk, boolean debuggable, boolean useAndroidX) {
-    TypeSpec bindingConfiguration = createType(sdk, debuggable, useAndroidX);
+  JavaFile brewJava(int sdk, boolean debuggable, boolean useLegacyTypes) {
+    TypeSpec bindingConfiguration = createType(sdk, debuggable, useLegacyTypes);
     return JavaFile.builder(bindingClassName.packageName(), bindingConfiguration)
         .addFileComment("Generated code from Butter Knife. Do not modify!")
         .build();
   }
 
-  private TypeSpec createType(int sdk, boolean debuggable, boolean useAndroidX) {
+  private TypeSpec createType(int sdk, boolean debuggable, boolean useLegacyTypes) {
     TypeSpec.Builder result = TypeSpec.classBuilder(bindingClassName.simpleName())
         .addModifiers(PUBLIC);
     if (isFinal) {
@@ -113,32 +115,32 @@ final class BindingSet {
     }
 
     if (isView) {
-      result.addMethod(createBindingConstructorForView(useAndroidX));
+      result.addMethod(createBindingConstructorForView(useLegacyTypes));
     } else if (isActivity) {
-      result.addMethod(createBindingConstructorForActivity(useAndroidX));
+      result.addMethod(createBindingConstructorForActivity(useLegacyTypes));
     } else if (isDialog) {
-      result.addMethod(createBindingConstructorForDialog(useAndroidX));
+      result.addMethod(createBindingConstructorForDialog(useLegacyTypes));
     }
     if (!constructorNeedsView()) {
       // Add a delegating constructor with a target type + view signature for reflective use.
-      result.addMethod(createBindingViewDelegateConstructor(useAndroidX));
+      result.addMethod(createBindingViewDelegateConstructor(useLegacyTypes));
     }
-    result.addMethod(createBindingConstructor(sdk, debuggable, useAndroidX));
+    result.addMethod(createBindingConstructor(sdk, debuggable, useLegacyTypes));
 
     if (hasViewBindings() || parentBinding == null) {
-      result.addMethod(createBindingUnbindMethod(result, useAndroidX));
+      result.addMethod(createBindingUnbindMethod(result, useLegacyTypes));
     }
 
     return result.build();
   }
 
-  private MethodSpec createBindingViewDelegateConstructor(boolean useAndroidX) {
+  private MethodSpec createBindingViewDelegateConstructor(boolean useLegacyTypes) {
     return MethodSpec.constructorBuilder()
         .addJavadoc("@deprecated Use {@link #$T($T, $T)} for direct creation.\n    "
                 + "Only present for runtime invocation through {@code ButterKnife.bind()}.\n",
             bindingClassName, targetTypeName, CONTEXT)
         .addAnnotation(Deprecated.class)
-        .addAnnotation(useAndroidX ? UI_THREAD_ANDROIDX : UI_THREAD)
+        .addAnnotation(useLegacyTypes ? UI_THREAD_LEGACY : UI_THREAD)
         .addModifiers(PUBLIC)
         .addParameter(targetTypeName, "target")
         .addParameter(VIEW, "source")
@@ -146,9 +148,9 @@ final class BindingSet {
         .build();
   }
 
-  private MethodSpec createBindingConstructorForView(boolean useAndroidX) {
+  private MethodSpec createBindingConstructorForView(boolean useLegacyTypes) {
     MethodSpec.Builder builder = MethodSpec.constructorBuilder()
-        .addAnnotation(useAndroidX ? UI_THREAD_ANDROIDX : UI_THREAD)
+        .addAnnotation(useLegacyTypes ? UI_THREAD_LEGACY : UI_THREAD)
         .addModifiers(PUBLIC)
         .addParameter(targetTypeName, "target");
     if (constructorNeedsView()) {
@@ -159,9 +161,9 @@ final class BindingSet {
     return builder.build();
   }
 
-  private MethodSpec createBindingConstructorForActivity(boolean useAndroidX) {
+  private MethodSpec createBindingConstructorForActivity(boolean useLegacyTypes) {
     MethodSpec.Builder builder = MethodSpec.constructorBuilder()
-        .addAnnotation(useAndroidX ? UI_THREAD_ANDROIDX : UI_THREAD)
+        .addAnnotation(useLegacyTypes ? UI_THREAD_LEGACY : UI_THREAD)
         .addModifiers(PUBLIC)
         .addParameter(targetTypeName, "target");
     if (constructorNeedsView()) {
@@ -172,9 +174,9 @@ final class BindingSet {
     return builder.build();
   }
 
-  private MethodSpec createBindingConstructorForDialog(boolean useAndroidX) {
+  private MethodSpec createBindingConstructorForDialog(boolean useLegacyTypes) {
     MethodSpec.Builder builder = MethodSpec.constructorBuilder()
-        .addAnnotation(useAndroidX ? UI_THREAD_ANDROIDX : UI_THREAD)
+        .addAnnotation(useLegacyTypes ? UI_THREAD_LEGACY : UI_THREAD)
         .addModifiers(PUBLIC)
         .addParameter(targetTypeName, "target");
     if (constructorNeedsView()) {
@@ -185,9 +187,9 @@ final class BindingSet {
     return builder.build();
   }
 
-  private MethodSpec createBindingConstructor(int sdk, boolean debuggable, boolean useAndroidX) {
+  private MethodSpec createBindingConstructor(int sdk, boolean debuggable, boolean useLegacyTypes) {
     MethodSpec.Builder constructor = MethodSpec.constructorBuilder()
-        .addAnnotation(useAndroidX ? UI_THREAD_ANDROIDX : UI_THREAD)
+        .addAnnotation(useLegacyTypes ? UI_THREAD_LEGACY : UI_THREAD)
         .addModifiers(PUBLIC);
 
     if (hasMethodBindings()) {
@@ -236,7 +238,7 @@ final class BindingSet {
         constructor.addStatement("$T view", VIEW);
       }
       for (ViewBinding binding : viewBindings) {
-        addViewBinding(constructor, binding, debuggable);
+        addViewBinding(constructor, binding, debuggable, useLegacyTypes);
       }
       for (FieldCollectionViewBinding binding : collectionBindings) {
         constructor.addStatement("$L", binding.render(debuggable));
@@ -262,12 +264,13 @@ final class BindingSet {
     return constructor.build();
   }
 
-  private MethodSpec createBindingUnbindMethod(TypeSpec.Builder bindingClass, boolean useAndroidX) {
+  private MethodSpec createBindingUnbindMethod(TypeSpec.Builder bindingClass,
+      boolean useLegacyTypes) {
     MethodSpec.Builder result = MethodSpec.methodBuilder("unbind")
         .addAnnotation(Override.class)
         .addModifiers(PUBLIC);
     if (!isFinal && parentBinding == null) {
-      result.addAnnotation(useAndroidX ? CALL_SUPER_ANDROIDX : CALL_SUPER);
+      result.addAnnotation(useLegacyTypes ? CALL_SUPER_LEGACY : CALL_SUPER);
     }
 
     if (hasTargetField()) {
@@ -291,7 +294,7 @@ final class BindingSet {
     if (hasMethodBindings()) {
       result.addCode("\n");
       for (ViewBinding binding : viewBindings) {
-        addFieldAndUnbindStatement(bindingClass, result, binding);
+        addFieldAndUnbindStatement(bindingClass, result, binding, useLegacyTypes);
       }
     }
 
@@ -303,7 +306,7 @@ final class BindingSet {
   }
 
   private void addFieldAndUnbindStatement(TypeSpec.Builder result, MethodSpec.Builder unbindMethod,
-      ViewBinding bindings) {
+      ViewBinding bindings, boolean useLegacyTypes) {
     // Only add fields to the binding if there are method bindings.
     Map<ListenerClass, Map<ListenerMethod, Set<MethodViewBinding>>> classMethodBindings =
         bindings.getMethodBindings();
@@ -329,13 +332,14 @@ final class BindingSet {
       boolean requiresRemoval = !"".equals(listenerClass.remover());
       String listenerField = "null";
       if (requiresRemoval) {
-        TypeName listenerClassName = bestGuess(listenerClass.type());
+        TypeName listenerClassName = bestGuess(getType(listenerClass, useLegacyTypes));
         listenerField = fieldName + ((ClassName) listenerClassName).simpleName();
         result.addField(listenerClassName, listenerField, PRIVATE);
       }
 
-      if (!VIEW_TYPE.equals(listenerClass.targetType())) {
-        unbindMethod.addStatement("(($T) $N).$N($N)", bestGuess(listenerClass.targetType()),
+      String targetType = getTargetType(listenerClass, useLegacyTypes);
+      if (!VIEW_TYPE.equals(targetType)) {
+        unbindMethod.addStatement("(($T) $N).$N($N)", bestGuess(targetType),
             fieldName, removerOrSetter(listenerClass, requiresRemoval), listenerField);
       } else {
         unbindMethod.addStatement("$N.$N($N)", fieldName,
@@ -354,16 +358,35 @@ final class BindingSet {
     }
   }
 
+  private static String getType(ListenerClass listenerClass, boolean useLegacyTypes) {
+    String type = listenerClass.type();
+    String legacyType = listenerClass.legacyType();
+    if (useLegacyTypes && !legacyType.isEmpty()) {
+      type = legacyType;
+    }
+    return type;
+  }
+
+  private static String getTargetType(ListenerClass listenerClass, boolean useLegacyTypes) {
+    String targetType = listenerClass.targetType();
+    String legacyTargetType = listenerClass.legacyTargetType();
+    if (useLegacyTypes && !legacyTargetType.isEmpty()) {
+      targetType = legacyTargetType;
+    }
+    return targetType;
+  }
+
   private String removerOrSetter(ListenerClass listenerClass, boolean requiresRemoval) {
     return requiresRemoval
         ? listenerClass.remover()
         : listenerClass.setter();
   }
 
-  private void addViewBinding(MethodSpec.Builder result, ViewBinding binding, boolean debuggable) {
+  private void addViewBinding(MethodSpec.Builder result, ViewBinding binding, boolean debuggable,
+      boolean useLegacyTypes) {
     if (binding.isSingleFieldBinding()) {
       // Optimize the common case where there's a single binding directly to a field.
-      FieldViewBinding fieldBinding = binding.getFieldBinding();
+      FieldViewBinding fieldBinding = requireNonNull(binding.getFieldBinding());
       CodeBlock.Builder builder = CodeBlock.builder()
           .add("target.$L = ", fieldBinding.getName());
 
@@ -401,7 +424,7 @@ final class BindingSet {
     }
 
     addFieldBinding(result, binding, debuggable);
-    addMethodBindings(result, binding, debuggable);
+    addMethodBindings(result, binding, debuggable, useLegacyTypes);
   }
 
   private void addFieldBinding(MethodSpec.Builder result, ViewBinding binding, boolean debuggable) {
@@ -422,8 +445,8 @@ final class BindingSet {
     }
   }
 
-  private void addMethodBindings(MethodSpec.Builder result, ViewBinding binding,
-      boolean debuggable) {
+  private void addMethodBindings(MethodSpec.Builder result, ViewBinding binding, boolean debuggable,
+      boolean useLegacyTypes) {
     Map<ListenerClass, Map<ListenerMethod, Set<MethodViewBinding>>> classMethodBindings =
         binding.getMethodBindings();
     if (classMethodBindings.isEmpty()) {
@@ -451,7 +474,7 @@ final class BindingSet {
       Map<ListenerMethod, Set<MethodViewBinding>> methodBindings = e.getValue();
 
       TypeSpec.Builder callback = TypeSpec.anonymousClassBuilder("")
-          .superclass(ClassName.bestGuess(listener.type()));
+          .superclass(ClassName.bestGuess(getType(listener, useLegacyTypes)));
 
       for (ListenerMethod method : getListenerMethods(listener)) {
         MethodSpec.Builder callbackMethod = MethodSpec.methodBuilder(method.name())
@@ -506,13 +529,14 @@ final class BindingSet {
       boolean requiresRemoval = listener.remover().length() != 0;
       String listenerField = null;
       if (requiresRemoval) {
-        TypeName listenerClassName = bestGuess(listener.type());
+        TypeName listenerClassName = bestGuess(getType(listener, useLegacyTypes));
         listenerField = fieldName + ((ClassName) listenerClassName).simpleName();
         result.addStatement("$L = $L", listenerField, callback.build());
       }
 
-      if (!VIEW_TYPE.equals(listener.targetType())) {
-        result.addStatement("(($T) $N).$L($L)", bestGuess(listener.targetType()), bindName,
+      String targetType = getTargetType(listener, useLegacyTypes);
+      if (!VIEW_TYPE.equals(targetType)) {
+        result.addStatement("(($T) $N).$L($L)", bestGuess(targetType), bindName,
             listener.setter(), requiresRemoval ? listenerField : callback.build());
       } else {
         result.addStatement("$N.$L($L)", bindName, listener.setter(),
@@ -667,7 +691,7 @@ final class BindingSet {
   /** True if this binding requires a view. Otherwise only a context is needed. */
   private boolean constructorNeedsView() {
     return hasViewBindings() //
-        || parentBinding != null && parentBinding.constructorNeedsView();
+        || (parentBinding != null && parentBinding.constructorNeedsView());
   }
 
   static boolean requiresCast(TypeName type) {
@@ -707,7 +731,7 @@ final class BindingSet {
     private final boolean isActivity;
     private final boolean isDialog;
 
-    private BindingSet parentBinding;
+    private @Nullable BindingSet parentBinding;
 
     private final Map<Id, ViewBinding.Builder> viewIdMap = new LinkedHashMap<>();
     private final ImmutableList.Builder<FieldCollectionViewBinding> collectionBindings =
@@ -753,7 +777,7 @@ final class BindingSet {
       this.parentBinding = parent;
     }
 
-    String findExistingBindingName(Id id) {
+    @Nullable String findExistingBindingName(Id id) {
       ViewBinding.Builder builder = viewIdMap.get(id);
       if (builder == null) {
         return null;
